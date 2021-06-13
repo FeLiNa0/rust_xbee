@@ -1,0 +1,13 @@
+* code
+- figure out a nice module layout
+- use a state machine for parsing?
+* optimization
+- allocate vectors of minimal size for frames
+- allocate content vector of minimal size
+
+* features
+- return partial frame in case of checksum failure or other failure
+- return readable parse errors
+- copy niolabs python xbee library
+- copy official python xbee library
+- add async read and write

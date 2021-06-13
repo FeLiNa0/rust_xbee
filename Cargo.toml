@@ -1,0 +1,8 @@
+[package]
+name = "rust_xbee"
+version = "0.0.1"
+authors = ["Hugo O. Rivera <hugo@roguh.com>"]
+edition = "2018"
+
+[dependencies]
+serialport = "4.0.1"
