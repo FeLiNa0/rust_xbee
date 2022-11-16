@@ -3,9 +3,11 @@ use std::convert::TryFrom;
 
 const EXPLICIT_RX_TYPE: u8 = 0x91;
 const LOCAL_AT_COMMAND_RESP_TYPE: u8 = 0x88;
-const MTO_RRI_TYPE: u8 = 0xa3;
+const MTO_RRI_TYPE: u8 = 0xA3;
+const TX_STATUS_TYPE: u8 = 0x8B;
+const RRI_TYPE: u8 = 0xA1;
 
-const MAX_FRAME_SIZE: usize = 0xffff;
+const MAX_FRAME_SIZE: usize = 0xFFFF;
 const ESCAPE: u8 = 0x7D;
 const ESCAPE_MASK: u8 = 0x20;
 // Starting offsets
@@ -82,9 +84,29 @@ pub struct LocalATCommandFrame {
 }
 
 #[derive(Debug)]
+pub struct TxStatusFrame {
+    pub frame_id: u8,
+    pub addr16: Vec<u8>,
+    pub retry_count: u8,
+    pub delivery_status: u8,
+    pub discovery_status: u8,
+}
+
+#[derive(Debug)]
+pub struct RRIFrame {
+    pub addr64: Vec<u8>,
+    pub addr16: Vec<u8>,
+    pub receive_options: u8,
+    pub hop_count: u8,
+    pub hops: Vec<u16>,
+}
+
+#[derive(Debug)]
 pub enum Frame {
     Response(ResponseFrame),
     LocalATCommand(LocalATCommandFrame),
+    TxStatus(TxStatusFrame),
+    RRI(RRIFrame),
     ManyToOneRRI,
 }
 
@@ -112,12 +134,16 @@ impl TryFrom<u8> for CommandStatus {
 }
 
 type SerialPort = Box<dyn serialport::SerialPort>;
+
 fn read_byte(port: &mut SerialPort) -> Result<u8, String> {
     let mut response: Vec<u8> = vec![0; 1];
     loop {
         match port.read(response.as_mut_slice()) {
             Ok(_) => return Ok(response[0]),
+            // Keep looping if there's a timeout
             Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => (),
+            // Return any other error as a string
+            // TODO use anyhow or a better error propagation solution
             Err(e) => return Err(format!("{:?}", e)),
         }
     }
@@ -225,9 +251,8 @@ fn parse_explicit_rx(state: &mut ParseState) -> Result<Frame, String> {
 fn parse_at_data(command: &String, data: &[u8]) -> Result<ATCommandData, String> {
     let map = at_command_to_data_type();
     match map.get(&*command) {
-        Some(ATCommandDataTag::String) => Ok( ATCommandData::String(
-                String::from_utf8(data.to_vec())
-                .map_err(|e| format!("{:?}", e))?
+        Some(ATCommandDataTag::String) => Ok(ATCommandData::String(
+            String::from_utf8(data.to_vec()).map_err(|e| format!("{:?}", e))?,
         )),
         _ => Ok(ATCommandData::Bytes),
     }
@@ -278,9 +303,60 @@ fn parse_mto_rri(state: &mut ParseState) -> Result<Frame, String> {
     Ok(Frame::ManyToOneRRI)
 }
 
+fn parse_tx_status(state: &mut ParseState) -> Result<Frame, String> {
+    let mut frame = TxStatusFrame {
+        frame_id: 0,
+        addr16: Vec::with_capacity(2),
+        retry_count: 0,
+        delivery_status: 0,
+        discovery_status: 0,
+    };
+
+    frame.frame_id = unescape_byte(state)?;
+
+    for _ in 5..7 {
+        frame.addr16.push(unescape_byte(state)?);
+    }
+
+    frame.retry_count = unescape_byte(state)?;
+    frame.delivery_status = unescape_byte(state)?;
+    frame.discovery_status = unescape_byte(state)?;
+
+    validate_checksum(state)?;
+
+    Ok(Frame::TxStatus(frame))
+}
+
+fn parse_rri(state: &mut ParseState) -> Result<Frame, String> {
+    let mut frame = RRIFrame {
+        addr16: Vec::with_capacity(2),
+        addr64: Vec::with_capacity(8),
+        receive_options: 0,
+        hop_count: 0,
+        hops: vec![],
+    };
+
+    for _ in 5..13 {
+        frame.addr64.push(unescape_byte(state)?);
+    }
+    for _ in 13..15 {
+        frame.addr16.push(unescape_byte(state)?);
+    }
+    frame.receive_options = unescape_byte(state)?;
+    frame.hop_count = unescape_byte(state)?;
+
+    for _ in 0..frame.hop_count * 2 {
+        unescape_byte(state)?;
+    }
+
+    validate_checksum(state)?;
+
+    Ok(Frame::RRI(frame))
+}
+
 pub fn parse_frame<'a>(port: &'a mut SerialPort, ap_param: i32) -> Result<Frame, String> {
     let mut state = ParseState {
-        port: port,
+        port,
         index: 0,
         length: 0xffff,
         content: Vec::new(),
@@ -296,6 +372,8 @@ pub fn parse_frame<'a>(port: &'a mut SerialPort, ap_param: i32) -> Result<Frame,
         EXPLICIT_RX_TYPE => return parse_explicit_rx(&mut state),
         LOCAL_AT_COMMAND_RESP_TYPE => return parse_local_at_response(&mut state),
         MTO_RRI_TYPE => return parse_mto_rri(&mut state),
+        TX_STATUS_TYPE => return parse_tx_status(&mut state),
+        RRI_TYPE => return parse_rri(&mut state),
         _ => return Err(format!("unknown frame type 0x{:x}", frame_type)),
     }
 }

@@ -33,7 +33,7 @@ pub fn send_data(
     address16: Option<&[u8; 2]>,
     data: &[u8],
     frame_id: u8,
-) -> Result<(), String> {
+) -> Result<Vec<u8>, String> {
     let mut addr64: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
     let mut addr16: [u8; 2] = [0xFF, 0xFE];
     match (address, address16) {
@@ -42,8 +42,16 @@ pub fn send_data(
         (None, None) => return Err("at least one address type is required".into()),
     }
     let broadcast_radius = 0;
-    let transmit_opptions = 0;
-    Ok(())
+    let transmit_options = 0;
+
+    let mut content = vec![TRANSMIT_REQUEST];
+    content.push(frame_id);
+    content.extend(&addr64);
+    content.extend(&addr16);
+    content.push(broadcast_radius);
+    content.push(transmit_options);
+    content.extend(data);
+    make_api_frame(&content)
 }
 
 pub fn make_api_frame(content: &Vec<u8>) -> Result<Vec<u8>, String> {
